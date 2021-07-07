@@ -1,0 +1,102 @@
+daml 1.2
+module PaidService where 
+
+template Service
+    with
+        provider: Party
+        beneficiary: Party
+        what: Text
+        cost: Decimal
+        currency: Text
+        transferrable: Bool
+        optAgent: Optional Party
+    where
+        signatory provider -- MUST do sth, obligated
+
+        controller beneficiary can -- MAY do something, asset, right, choice
+            Transfer: ContractId ServiceOffer
+                with nextBeneficiary: Party
+                do
+                    assert transferrable
+                    create ServiceOffer
+                        with 
+                            service = this 
+                            nextBeneficiary
+            
+            DesignateAgent: ContractId AgentOffer -- beneficiary can designate an agent
+                with agent: Party
+                do
+                    -- assert agent = optAgent
+                    case optAgent of
+                        Some a -> assert $ a == agent
+                        None -> return ()
+                    create AgentOffer
+                        with
+                            service = this
+                            agent
+
+template AgentOffer
+    with
+        service: Service
+        agent: Party
+    where
+        signatory service.provider, service.beneficiary
+
+        controller agent can
+            AcceptRole: (ContractId Service, ContractId Service)
+                do
+                    service1 <- create service with beneficiary = agent
+                    service2 <- create service with provider = agent
+                    return (service1, service2)
+
+template ServiceOffer
+    with
+        service: Service
+        nextBeneficiary: Party
+    where
+        signatory service.provider, service.beneficiary
+
+        controller nextBeneficiary can -- MAY exercise
+            AcceptOffer: ContractId Service
+                do create service with beneficiary = nextBeneficiary
+            
+            RejectOffer: ContractId Service
+                do
+                    create service
+
+test = scenario do
+    bob <- getParty "Bob"
+    dylan <- getParty "Dylan"
+    savage <- getParty "Savage"
+    tom <- getParty "Tom"
+
+    cid <- dylan `submit` do
+        create Service
+            with
+                provider = dylan
+                beneficiary = dylan
+                what = "Consulting Services"
+                cost = 1000.00
+                currency = "USD"
+                transferrable = True
+                optAgent = Some savage
+
+    cid <- dylan `submit` do
+        exercise cid Transfer
+            with nextBeneficiary = bob
+
+    cid <- bob `submit` do
+        exercise cid AcceptOffer
+
+    cid <- bob `submit` do
+        exercise cid DesignateAgent
+            with agent = savage
+
+    cids <- savage `submit` do
+        exercise cid AcceptRole
+
+    bob `submit` do
+        exercise (cids._2) Transfer
+            with nextBeneficiary = tom
+
+    return ()
